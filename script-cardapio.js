@@ -1,8 +1,5 @@
-// 2026-11-19: o Firebase NÃO segura mais a abertura do cardápio. Ele é carregado em
-// segundo plano; o cardápio aparece com os dados pedidos pelo endereço web do banco
-// (rápido e funciona no navegador do Instagram). O Firebase só é esperado por quem
-// precisa dele (enviar pedido, cupom, tema, comunicados).
-const SDK_FIREBASE = "https://www.gstatic.com/firebasejs/10.7.1/";
+import { initializeApp } from "https://www.gstatic.com/firebasejs/10.7.1/firebase-app.js";
+import { getFirestore, collection, getDocs, getDoc, doc, query, where, setDoc, updateDoc } from "https://www.gstatic.com/firebasejs/10.7.1/firebase-firestore.js";
 
 const firebaseConfig = {
   apiKey: "AIzaSyD5JlV7R2w629uiescD4AiixNAr-Qt0qI0",
@@ -13,54 +10,13 @@ const firebaseConfig = {
   appId: "1:793414871188:web:07ab447df44d742e022c81"
 };
 
-// Conexão simples ("long polling"): o modo padrão do Firebase trava no navegador
-// interno do Instagram/Facebook (de onde vem o link da bio).
-const sdkPronto = Promise.all([import(SDK_FIREBASE + "firebase-app.js"), import(SDK_FIREBASE + "firebase-firestore.js")]).then(([modApp, f]) => {
-    const app = modApp.initializeApp(firebaseConfig);
-    let banco;
-    try { banco = f.initializeFirestore(app, { experimentalForceLongPolling: true }); } catch (e) { banco = f.getFirestore(app); }
-    return { f, db: banco };
-});
-sdkPronto.catch(e => console.warn('Firebase:', e));
-// Mesmas funções de antes; cada uma espera o Firebase só quando é chamada.
-const db = {};
-function collection(_db, ...partes) { return sdkPronto.then(s => s.f.collection(s.db, ...partes)); }
-function doc(_db, ...partes) { return sdkPronto.then(s => s.f.doc(s.db, ...partes)); }
-function where(...args) { return { __where: args }; }
-function query(base, ...filtros) { return sdkPronto.then(async s => s.f.query(await base, ...filtros.map(c => (c && c.__where) ? s.f.where(...c.__where) : c))); }
-async function getDocs(q) { const s = await sdkPronto; return s.f.getDocs(await q); }
-async function getDoc(r) { const s = await sdkPronto; return s.f.getDoc(await r); }
-async function setDoc(r, ...resto) { const s = await sdkPronto; return s.f.setDoc(await r, ...resto); }
-async function updateDoc(r, ...resto) { const s = await sdkPronto; return s.f.updateDoc(await r, ...resto); }
+const app = initializeApp(firebaseConfig);
+const db = getFirestore(app);
 
 let configCategorias = {};
 let bancoDeProdutos = {}; 
-Object.defineProperty(window, '__bancoDeProdutosRef', { get: () => bancoDeProdutos });
 window.totalPedidoAtivo = 0; 
 window.regrasAgenda = {}; // Agenda Global
-
-// 2026-10-15: uma data específica (aba Horários) pode valer só para algumas categorias.
-// Sem categorias = vale para todos os pedidos. Com categorias = só quando o carrinho
-// tem itens de alguma delas; senão, o dia segue a agenda normal.
-window.regraExcecaoAplicavel = function(dataISO) {
-    // 2026-10-15: cada data específica pertence a um cardápio ("AAAA-MM-DD" = padrão).
-    const idCard = (window.__cardapioAtual && window.__cardapioAtual.id) || 'padrao';
-    const chave = idCard === 'padrao' ? dataISO : `${dataISO}__${idCard}`;
-    const regra = window.regrasAgenda ? window.regrasAgenda[chave] : null;
-    if (!regra) return null;
-    const cats = Array.isArray(regra.categorias) ? regra.categorias.filter(Boolean) : [];
-    if (!cats.length) return regra;
-    const norm = v => String(v || '').normalize('NFD').replace(/[\u0300-\u036f]/g, '').trim().toLowerCase();
-    const alvo = new Set(cats.map(norm));
-    const noCarrinho = new Set();
-    document.querySelectorAll('.quantidade-input').forEach(input => {
-        if ((parseInt(input.value) || 0) <= 0) return;
-        const prod = (window.__bancoDeProdutosRef || {})[input.getAttribute('data-item-id')] || {};
-        [prod.categoria, input.getAttribute('data-grupo')].forEach(c => { if (c) noCarrinho.add(norm(c)); });
-    });
-    for (const c of noCarrinho) if (alvo.has(c)) return regra;
-    return null;
-};
 
 // ==========================================
 // FORMATADOR DE TEXTO RICO SEGURO
@@ -248,548 +204,29 @@ window.filtrarHorariosDisponiveisPorAgora = function(dataISO, horarios) {
 
 
 // =====================================================================
-// TEMA DO SITE (2026-10-15): cores + imagens do tema aplicado no painel.
-// Campos em branco mantêm o visual padrão do site. Fundos aceitam degradê.
+// TEMA DO SITE (2026-10): cores + imagens do tema aplicado no painel.
+// Campos de imagem vazios mantêm as imagens padrão do site.
 // =====================================================================
 function aplicarTemaSite(t) {
     if (!t) return;
     const root = document.documentElement;
-    const ehCardapio = !!document.getElementById('menu-principal');
-    const ehDegrade = v => /gradient\(/i.test(String(v || ''));
-    const primeiraCor = v => (String(v || '').match(/#[0-9a-f]{3,8}|rgba?\([^)]*\)/i) || [''])[0];
-    const r = [];
-    const fundo = ehCardapio ? (t.bgCardapio || t.bg) : t.bg;
-    if (fundo) {
-        if (ehDegrade(fundo)) {
-            const c = primeiraCor(fundo); if (c) root.style.setProperty('--bg-color', c);
-            r.push(`body { background: ${fundo} !important; background-attachment: fixed !important; }`);
-        } else root.style.setProperty('--bg-color', fundo);
-    }
-    // Cores gerais com degradê: a variável usa a primeira cor do degradê.
-    const corSolida = v => ehDegrade(v) ? primeiraCor(v) : v;
-    if (t.card) root.style.setProperty('--card-bg', corSolida(t.card)); else root.style.removeProperty('--card-bg');
-    if (t.txt) root.style.setProperty('--text-dark', corSolida(t.txt)); else root.style.removeProperty('--text-dark');
-    if (t.acc) { root.style.setProperty('--accent-orange', corSolida(t.acc)); root.style.setProperty('--accent-rust', corSolida(t.acc)); }
-    // "__sem__" = o tema pediu para não ter imagem nesse lugar.
-    const SEM = '__sem__';
-    // Guarda a imagem original para voltar a ela quando o campo fica vazio (prévia ao vivo).
-    const trocarImg = (sel, v) => { document.querySelectorAll(sel).forEach(img => {
-        if (img.dataset.orig === undefined) img.dataset.orig = img.getAttribute('src') || '';
-        if (!v) { img.style.display = ''; img.src = img.dataset.orig; }
-        else if (v === SEM) img.style.display = 'none';
-        else { img.style.display = ''; img.src = v; } }); };
-    const trocarFundo = (sel, v) => { const el = document.querySelector(sel); if (!el) return; el.style.backgroundImage = !v ? '' : (v === SEM ? 'none' : `url('${v}')`); };
-    // 2026-10-15: o cardápio tem topo, rodapé e logo do menu próprios (e cada cardápio pode ter os seus).
-    const idCardImg = ehCardapio && window.__cardapioAtual ? window.__cardapioAtual.id : 'padrao';
-    const doCard = (t.porCardapio && t.porCardapio[idCardImg] && t.porCardapio[idCardImg].imgs) || {};
-    const imgTopoUsar = ehCardapio ? (doCard.imgTopoCardapio || t.imgTopoCardapio || t.imgTopo) : t.imgTopo;
-    const imgRodapeUsar = ehCardapio ? (doCard.imgRodapeCardapio || t.imgRodapeCardapio || t.imgRodape) : t.imgRodape;
-    trocarImg('.hero-logo-big', t.logoPrincipal);
-    trocarImg('.menu-logo-img', ehCardapio ? (doCard.logoMenuCardapio || t.logoMenuCardapio || t.logoMenu || t.logoPrincipal) : (t.logoMenu || t.logoPrincipal));
-    trocarImg('.footer-logo', t.logoRodape);
-    trocarFundo('header', imgTopoUsar);
-    // Sem imagem no topo: tira também a sombra que marcava o espaço.
-    const cab = document.querySelector('header');
-    if (cab) cab.style.boxShadow = imgTopoUsar === SEM ? 'none' : '';
-    trocarFundo('footer', imgRodapeUsar);
-    // Regras próprias do cardápio aberto (body.cardapio-<id>).
-    if (ehCardapio && t.porCardapio && t.porCardapio[idCardImg] && Array.isArray(t.porCardapio[idCardImg].regrasCss)) t.porCardapio[idCardImg].regrasCss.forEach(x => r.push(x));
-    trocarImg('#aboutModal .modal-img', t.imgQuemSomos);
-    // Regras de cada elemento, já prontas no tema (painel > Temas).
-    (Array.isArray(t.regrasCss) ? t.regrasCss : []).forEach(x => r.push(x));
-
-    const add = (cor, regra) => { if (cor) r.push(regra.replace(/\$C/g, cor)); };
-    add(t.corMenuLateral, '.side-menu { background: $C !important; }');
-    add(t.corIconesBotoes, '.card-icon, .card-icon i { color: $C !important; }');
-    add(t.corBotoes, '.clean-card, .btn-primary { background: $C !important; }');
-    add(t.corTextoBotoes, '.card-info h3, .btn-primary { color: $C !important; }');
-    add(t.corLegendaBotoes, '.card-info p { color: $C !important; }');
-    add(t.corTituloCategorias, '.categoria-title { color: $C !important; }');
-    add(t.corBotoesCategorias, '#categorias-horizontal a:not(.active-link) { background: $C !important; }');
-    add(t.corTextoCategorias, '#categorias-horizontal a:not(.active-link) { color: $C !important; }');
-    add(t.corFundoItens, '.table-card { background: $C !important; }');
-    add(t.corTituloItens, 'td.col-item, td.col-item .item-nome-texto { color: $C !important; }');
-    add(t.corDescricoes, '.descricao, .peso-mobile { color: $C !important; }');
-    add(t.corResumoPedido, '#fixed-summary { background: $C !important; }');
-    add(t.corFundoResumo, '#popup-resumo .popup-conteudo, #popup-resumo #cupom-container strong { background: $C !important; }');
-    add(t.corBotoesResumo, '#popup-resumo .btn-fazer-pedido, #popup-resumo .btn-primary-large, #popup-resumo #apply-cupom-btn { background: $C !important; }');
-    add(t.corFundoInfoPedido, '#popup-pedido .popup-conteudo { background: $C !important; }');
-    add(t.corBotoesInfoPedido, '#popup-pedido .btn-primary-large { background: $C !important; }');
-    let tag = document.getElementById('tema-dinamico');
-    if (!tag) { tag = document.createElement('style'); tag.id = 'tema-dinamico'; document.head.appendChild(tag); }
-    tag.textContent = r.join('\n');
-}
-
-// Prévia ao vivo (editor de temas do painel): recebe o tema que está sendo editado
-// e faz piscar o elemento que a pessoa clicou.
-function prepararPreviaAoVivo() {
-    if (window.__aoVivoPronto) return;
-    window.__aoVivoPronto = true;
-    const st = document.createElement('style');
-    st.textContent = '.favu-destaque{outline:3px dashed #E60000 !important;outline-offset:3px !important;animation:favuPisca 1s ease 3;} @keyframes favuPisca{50%{outline-color:transparent;}}';
-    document.head.appendChild(st);
-    window.addEventListener('message', async (ev) => {
-        if (ev.origin !== location.origin || !ev.data) return;
-        if (ev.data.tipo === 'favu-tema-ao-vivo') {
-            const d = ev.data.dados || {};
-            try { aplicarTemaSite(await resolverImagensTema(d)); } catch (e) {}
-            try {
-                if (typeof aplicarConteudoInicio === 'function' && d.conteudoInicio) aplicarConteudoInicio(d.conteudoInicio);
-                if (typeof aplicarConteudoCardapio === 'function' && d.conteudoCardapio) aplicarConteudoCardapio(d.conteudoCardapio, null);
-            } catch (e) {}
-        }
-        if (ev.data.tipo === 'favu-destacar') {
-            document.querySelectorAll('.favu-destaque').forEach(e => e.classList.remove('favu-destaque'));
-            const abrir = ev.data.abrir || '';
-            // Na prévia, o comunicado não fica na frente do que está sendo editado.
-            const aviso = document.getElementById('popup-aviso');
-            if (aviso) { aviso.classList.remove('show'); aviso.style.display = 'none'; }
-            const menu = document.getElementById('side-menu');
-            if (menu) menu.classList.toggle('active', abrir === 'menu');
-            const about = document.getElementById('aboutModal');
-            if (about) { if (abrir === 'quemsomos') { about.classList.add('show'); about.style.display = 'flex'; } else { about.classList.remove('show'); about.style.display = ''; } }
-            // Janelas do pedido na prévia: coloca um item de exemplo para mostrar itens, total e botões.
-            if ((abrir === 'resumo' || abrir === 'info') && ![...document.querySelectorAll('.quantidade-input')].some(i => (parseInt(i.value) || 0) > 0)) {
-                const exemplo = document.querySelector('.quantidade-input');
-                if (exemplo) { exemplo.value = 1; exemplo.dispatchEvent(new Event('input', { bubbles: true })); exemplo.dispatchEvent(new Event('change', { bubbles: true })); }
-            }
-            const fotoItem = document.getElementById('popup-item-imagem');
-            if (fotoItem) {
-                if (abrir === 'itemfoto') {
-                    const nome = document.getElementById('item-nome-display'), desc = document.getElementById('item-descricao-display');
-                    if (nome && !nome.textContent) nome.textContent = 'Nome do item';
-                    if (desc && !desc.textContent) desc.textContent = 'Descrição do item, como aparece para o cliente.';
-                    fotoItem.style.display = 'flex'; fotoItem.classList.add('show');
-                } else { fotoItem.style.display = ''; fotoItem.classList.remove('show'); }
-            }
-            ['resumo', 'info'].forEach(n => {
-                const pop = document.getElementById(n === 'resumo' ? 'popup-resumo' : 'popup-pedido');
-                if (!pop) return;
-                if (abrir === n) { pop.style.display = 'flex'; pop.classList.add('show'); } else { pop.style.display = 'none'; pop.classList.remove('show'); }
-            });
-            if (!ev.data.seletor) return;
-            setTimeout(() => {
-                const els = document.querySelectorAll(ev.data.seletor);
-                els.forEach(e => e.classList.add('favu-destaque'));
-                if (els[0]) els[0].scrollIntoView({ behavior: 'smooth', block: 'center' });
-            }, 250);
-        }
-    });
-}
-
-// Prévia (painel > Temas > Prévia): ?tema_previa=<id> carrega o tema da lista,
-// já com o que ele herda do tema Padrão, sem precisar aplicar no site.
-async function obterTemaParaAplicar() {
-    const idPrevia = new URLSearchParams(location.search).get('tema_previa');
-    if (idPrevia) {
-        try {
-            if (new URLSearchParams(location.search).has('ao_vivo')) prepararPreviaAoVivo();
-            const snap = await getDoc(doc(db, 'config', 'temas_lista'));
-            const lista = snap.exists() ? (snap.data().temas || []) : [];
-            const t = lista.find(x => x.id === idPrevia);
-            const padrao = lista.find(x => x.id === 'padrao') || {};
-            if (t) {
-                const efetivo = {};
-                new Set([...Object.keys(padrao), ...Object.keys(t)]).forEach(k => { efetivo[k] = t[k] || (t.id !== 'padrao' ? padrao[k] : '') || ''; });
-                document.querySelectorAll('a[href]').forEach(a => {
-                    const href = a.getAttribute('href') || '';
-                    if (/(^|\/)(index|cardapio)\.html/.test(href) || href === './') a.setAttribute('href', href + (href.includes('?') ? '&' : '?') + 'tema_previa=' + encodeURIComponent(idPrevia));
-                });
-                return efetivo;
-            }
-        } catch (e) {}
-    }
-    // Tema agendado e tema no ar buscados ao mesmo tempo (antes, um depois do outro).
-    const [ag, temaDoc] = await Promise.all([
-        buscarDocRapido('config', 'tema_agendados').catch(() => null),
-        buscarDocRapido('config', 'tema')
-    ]);
-    try {
-        const agora = Date.now();
-        const vigentes = (ag && ag.exists() ? (ag.data().lista || []) : []).filter(x => x && x.dados && (x.inicio == null || agora >= x.inicio) && (x.fim == null || agora < x.fim));
-        if (vigentes.length) return vigentes.sort((a, b) => (b.inicio || 0) - (a.inicio || 0))[0].dados;
-    } catch (e) {}
-    return temaDoc.exists() ? temaDoc.data() : null;
-}
-
-// As imagens do tema ficam em documentos separados (config/tema_img_...), porque
-// juntas passavam do limite de 1 MB do Firestore. O tema guarda "cfgimg:<id>".
-async function resolverImagemTema(valor) {
-    const v = String(valor || '');
-    if (!v.startsWith('cfgimg:')) return v;
-    const id = v.slice(7);
-    try { const c = localStorage.getItem('favu_img_' + id); if (c) return c; } catch (e) {}
-    try {
-        const s = await buscarDocRapido('config', id);
-        const data = s.exists() ? (s.data().data || '') : '';
-        try { if (data) localStorage.setItem('favu_img_' + id, data); } catch (e) {}
-        return data;
-    } catch (e) { return ''; }
-}
-async function resolverImagensTema(t) {
-    const campos = ['logoPrincipal', 'logoMenu', 'imgTopo', 'imgRodape', 'logoRodape', 'imgQuemSomos', 'imgTopoCardapio', 'imgRodapeCardapio', 'logoMenuCardapio'];
-    const valores = await Promise.all(campos.map(k => resolverImagemTema(t[k])));
-    const out = { ...t };
-    campos.forEach((k, i) => { out[k] = valores[i]; });
-    // Imagens de cada cardápio (Natal…).
-    if (t.porCardapio) {
-        out.porCardapio = {};
-        for (const [id, st] of Object.entries(t.porCardapio)) {
-            const imgs = {};
-            for (const [k, v] of Object.entries((st && st.imgs) || {})) imgs[k] = await resolverImagemTema(v);
-            out.porCardapio[id] = { ...st, imgs };
-        }
-    }
-    return out;
-}
-
-
-// =====================================================================
-// EDITOR DO SITE (painel > Layout > Página inicial / Cardápio) — 2026-10-15
-// Se config/site_inicio ou config/site_cardapio existirem, os botões, links,
-// redes sociais e textos vêm de lá. Senão, o site fica como sempre foi.
-// Ações: link | quem_somos | cardapio | inicio | whatsapp | instagram
-// =====================================================================
-function escSite(v) { return String(v ?? '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;'); }
-function hrefAcaoSite(item) {
-    const acao = item.acao || 'link';
-    const link = String(item.link || '').trim();
-    if (acao === 'quem_somos') return { href: '#', abreQuemSomos: true };
-    if (acao === 'cardapio') return { href: link || (item.cardapio && item.cardapio !== 'padrao' ? `cardapio.html?menu=${encodeURIComponent(item.cardapio)}` : 'cardapio.html') };
-    if (acao === 'inicio') return { href: link || 'index.html' };
-    if (acao === 'whatsapp') { const n = link.replace(/\D/g, ''); return { href: n ? `https://wa.me/${n}` : link, externo: true }; }
-    return { href: link || '#', externo: /^https?:/i.test(link) };
-}
-function linkSiteHtml(item, classe, conteudo) {
-    const a = hrefAcaoSite(item);
-    const alvo = a.externo ? ' target="_blank" rel="noopener"' : '';
-    const clique = a.abreQuemSomos ? ' onclick="event.preventDefault(); window.openAboutModal && window.openAboutModal();"' : '';
-    return `<a href="${escSite(a.href)}" class="${classe}"${alvo}${clique}>${conteudo}</a>`;
-}
-const visiveisSite = lista => (Array.isArray(lista) ? lista : []).filter(i => i && i.visivel !== false).sort((a, b) => (a.ordem || 0) - (b.ordem || 0));
-// Cor própria de um botão (degradê nas letras quando for texto).
-function estiloCorSite(v, tipo) {
-    if (!v) return '';
-    if (tipo === 'fundo') return `background:${v} !important;`;
-    return /gradient\(/i.test(v) ? `background:${v};-webkit-background-clip:text;background-clip:text;-webkit-text-fill-color:transparent;color:transparent !important;` : `color:${v} !important;`;
-}
-function aplicarIconeMenuSite(icone) {
-    if (!icone) return;
-    document.querySelectorAll('#mobile-menu-btn i, .menu-btn i').forEach(i => { i.className = icone; });
-}
-function aplicarMenuLateralSite(dados) {
-    if (Array.isArray(dados.menuLateral)) {
-        const ul = document.querySelector('#side-menu .nav-links');
-        if (ul) ul.innerHTML = visiveisSite(dados.menuLateral).map(i => `<li>${linkSiteHtml(i, 'menu-link', escSite(i.titulo))}</li>`).join('');
-        if (ul) visiveisSite(dados.menuLateral).forEach((i, n) => { const a = ul.querySelectorAll('a')[n]; if (a && i.corTexto) a.setAttribute('style', estiloCorSite(i.corTexto, 'texto')); });
-    }
-    if (Array.isArray(dados.redes)) {
-        const box = document.querySelector('#side-menu .menu-socials');
-        if (box) box.innerHTML = visiveisSite(dados.redes).map(i => linkSiteHtml(i, 'menu-social-link', `<i class="${escSite(i.icone || 'fas fa-link')}" style="${estiloCorSite(i.corIcone, 'texto')}"></i> <span style="${estiloCorSite(i.corTexto, 'texto')}">${escSite(i.titulo)}</span>`)).join('');
-    }
-    aplicarIconeMenuSite(dados.menuIcone);
-}
-function aplicarQuemSomosSite(qs) {
-    if (!qs) return;
-    const corpo = document.querySelector('#aboutModal .modal-text');
-    const fmt = v => (window.formatText ? window.formatText(v) : v);
-    if (corpo && (qs.texto || qs.destaque)) corpo.innerHTML = (qs.texto ? fmt(qs.texto) : '') + (qs.destaque ? `<p class="highlight">${fmt(qs.destaque)}</p>` : '');
-    const btn = document.querySelector('#aboutModal .btn-primary');
-    if (btn) {
-        if (qs.botaoVisivel === false) btn.style.display = 'none';
-        else {
-            if (qs.botaoTexto) btn.textContent = qs.botaoTexto;
-            if (qs.botaoLink) { const a = hrefAcaoSite({ acao: qs.botaoAcao || 'link', link: qs.botaoLink }); btn.setAttribute('href', a.href); }
-        }
-    }
-}
-function aplicarRodapeSite(r) {
-    if (!r) return;
-    if (r.copyright) document.querySelectorAll('footer .copy').forEach(p => { p.textContent = r.copyright; });
-    if (r.assinatura) document.querySelectorAll('footer .desktop-signature span').forEach(s => { s.textContent = r.assinatura; });
-}
-async function carregarDadosSite(id) {
-    try { const d = await buscarDocRapido('config', id); return d.exists() ? d.data() : null; } catch (e) { return null; }
-}
-
-// Textos do cardápio editáveis no painel (Layout > Cardápio).
-window.__textosCardapio = { tituloResumo: 'RESUMO DO PEDIDO', botaoFazerPedido: 'FAZER PEDIDO', tituloInfo: 'INFORMAÇÕES DO PEDIDO', botaoConfirmar: 'CONFIRMAR PEDIDO', saudacaoWhatsapp: 'Olá, Favu!\nGostaria de encomendar os itens abaixo:',
-    tituloCupom: '', phCupom: '', botaoAplicar: '', rotuloNome: '', phNome: '', rotuloTelefone: '', phTelefone: '', rotuloData: '', rotuloPagamento: '', rotuloObs: '', phObs: '', botaoEditar: '', botaoAdicionar: '' };
-async function aplicarSiteCardapio() {
-    const tema = window.__temaAtual || {};
-    const idCard = (window.__cardapioAtual && window.__cardapioAtual.id) || 'padrao';
-    const doCardapio = tema.porCardapio && tema.porCardapio[idCard] && tema.porCardapio[idCard].conteudoCardapio;
-    const cardapio = doCardapio || tema.conteudoCardapio || await carregarDadosSite('site_cardapio');
-    const inicio = tema.conteudoInicio || await carregarDadosSite('site_inicio');
-    aplicarConteudoCardapio(cardapio, inicio);
-}
-function aplicarConteudoCardapio(cardapio, inicio) {
-    if (inicio) { aplicarQuemSomosSite(inicio.quemSomos); aplicarRodapeSite(inicio.rodape); }
-    if (!cardapio) return;
-    aplicarMenuLateralSite(cardapio);
-    const t = cardapio.textos || {};
-    Object.keys(window.__textosCardapio).forEach(k => { if (t[k] && String(t[k]).trim()) window.__textosCardapio[k] = String(t[k]); });
-    const T = window.__textosCardapio;
-    const texto = (sel, v) => { const el = document.querySelector(sel); if (el && v) el.textContent = v; };
-    const dentro = (sel, v) => { const el = document.querySelector(sel); if (el && v) el.setAttribute('placeholder', v); };
-    texto('#popup-resumo h2', T.tituloResumo); texto('#popup-pedido h2', T.tituloInfo); texto('#popup-pedido .btn-primary-large', T.botaoConfirmar);
-    texto('#cupom-container strong', T.tituloCupom); dentro('#cupom-input', T.phCupom); texto('#apply-cupom-btn', T.botaoAplicar);
-    texto('#popup-pedido label[for="nome"]', T.rotuloNome); dentro('#nome', T.phNome);
-    texto('#popup-pedido label[for="telefone"]', T.rotuloTelefone); dentro('#telefone', T.phTelefone);
-    texto('#popup-pedido label[for="data"]', T.rotuloData); texto('#popup-pedido label[for="pagamento"]', T.rotuloPagamento);
-    texto('#popup-pedido label[for="observacoes"]', T.rotuloObs); dentro('#observacoes', T.phObs);
-    texto('#popup-pedido .btn-secondary[onclick*="editarPedido"]', T.botaoEditar); texto('#popup-pedido .btn-secondary[onclick*="fecharPopup"]', T.botaoAdicionar);
-    if (cardapio.rodape) aplicarRodapeSite(cardapio.rodape);
-}
-// =====================================================================
-// VÁRIOS CARDÁPIOS (2026-10-15): cardapio.html?menu=<endereço> abre um cardápio
-// específico (ex.: Natal). Sem "menu" = cardápio padrão. A lista fica em config/cardapios.
-// Cada categoria diz em quais cardápios aparece (sem a lista = só no padrão).
-// =====================================================================
-window.__cardapioAtual = { id: 'padrao', nome: 'Cardápio padrão' };
-// Feita uma vez só (menu e comunicados esperam a mesma resposta).
-function carregarCardapioAtual() {
-    if (!window.__promessaCardapio) window.__promessaCardapio = descobrirCardapioAtual();
-    return window.__promessaCardapio;
-}
-async function descobrirCardapioAtual() {
-    const pedido = (new URLSearchParams(location.search).get('menu') || '').trim().toLowerCase();
-    try {
-        // Lista de cardápios guardada no aparelho: usada na hora e conferida em segundo plano.
-        let guardada = null;
-        try { guardada = JSON.parse(localStorage.getItem('favu_cardapios_cache') || 'null'); } catch (e) {}
-        const doBanco = buscarDocRapido('config', 'cardapios').then(snap => {
-            const l = snap.exists() && Array.isArray(snap.data().lista) ? snap.data().lista : [];
-            try { localStorage.setItem('favu_cardapios_cache', JSON.stringify(l)); } catch (e) {}
-            return l;
-        });
-        doBanco.catch(() => {});
-        const lista = Array.isArray(guardada) ? guardada : await doBanco;
-        window.__cardapiosExistentes = new Set(['padrao', ...lista.map(c => c && c.id).filter(Boolean)]);
-        const achado = pedido && pedido !== 'padrao' ? lista.find(c => c && c.id === pedido && c.ativo !== false) : null;
-        if (achado) window.__cardapioAtual = { id: achado.id, nome: achado.nome || achado.id };
-    } catch (e) {}
-    if (!pedido || pedido === 'padrao') return;
-    // Os links internos continuam neste cardápio.
-    if (window.__cardapioAtual.id !== 'padrao') {
-        document.querySelectorAll('a[href]').forEach(a => {
-            const h = a.getAttribute('href') || '';
-            if (/^cardapio\.html(\?|$)/.test(h) && !/menu=/.test(h)) a.setAttribute('href', h + (h.includes('?') ? '&' : '?') + 'menu=' + encodeURIComponent(window.__cardapioAtual.id));
-        });
-    }
-}
-// 2026-10-15: cada categoria pertence a UM cardápio (sem o campo = padrão).
-// Proteção: cardápio que não existe (ou vazio) = padrão, para a categoria nunca sumir.
-function cardapioDaCategoria(c) {
-    const id = Array.isArray(c.cardapios) && c.cardapios.length ? c.cardapios[0] : 'padrao';
-    const existentes = window.__cardapiosExistentes;
-    return !existentes || existentes.has(id) ? id : 'padrao';
-}
-function categoriaNoCardapioAtual(c) { return cardapioDaCategoria(c) === window.__cardapioAtual.id; }
-
-
-// =====================================================================
-// CARREGAMENTO RÁPIDO DO TEMA (2026-11-19)
-// - O tema da visita anterior fica guardado no aparelho e é aplicado na hora;
-//   o tema atualizado é buscado em segundo plano e reaplicado se mudou.
-// - As cores entram primeiro; as imagens (documentos grandes) entram depois,
-//   sem segurar o resto da página.
-// =====================================================================
-const CHAVE_CACHE_TEMA = 'favu_tema_cache';
-function semImagensTema(t) {
-    const o = { ...t };
-    Object.keys(o).forEach(k => { if (typeof o[k] === 'string' && o[k].startsWith('cfgimg:')) o[k] = ''; });
-    if (o.porCardapio) {
-        const pc = {};
-        Object.entries(o.porCardapio).forEach(([id, st]) => {
-            const imgs = {};
-            Object.entries((st && st.imgs) || {}).forEach(([k, v]) => { if (!String(v || '').startsWith('cfgimg:')) imgs[k] = v; });
-            pc[id] = { ...st, imgs };
-        });
-        o.porCardapio = pc;
-    }
-    return o;
-}
-async function aplicarTemaComImagens(t, antesDasImagens) {
-    if (!t) return;
-    try { aplicarTemaSite(semImagensTema(t)); } catch (e) {}
-    try {
-        if (antesDasImagens) await antesDasImagens();
-        aplicarTemaSite(await resolverImagensTema(t));
-    } catch (e) {}
-}
-async function obterTemaComCache(aoMudar) {
-    const previa = new URLSearchParams(location.search).has('tema_previa');
-    let cache = null;
-    if (!previa) { try { cache = JSON.parse(localStorage.getItem(CHAVE_CACHE_TEMA) || 'null'); } catch (e) {} }
-    const buscar = obterTemaParaAplicar().then(t => {
-        if (!previa && t) { try { localStorage.setItem(CHAVE_CACHE_TEMA, JSON.stringify(t)); } catch (e) {} }
-        return t;
-    });
-    if (!cache) return buscar;
-    buscar.then(t => { if (t && aoMudar && JSON.stringify(t) !== JSON.stringify(cache)) aoMudar(t); }).catch(() => {});
-    return cache;
-}
-
-// =====================================================================
-// SEGUNDA VIA DE BUSCA (2026-11-19): o mesmo banco, pelo endereço web direto.
-// Categorias, produtos e lista de cardápios são pedidos pelos dois caminhos ao
-// mesmo tempo; vale o que chegar primeiro. Se um travar, o outro resolve.
-// =====================================================================
-const URL_REST_FS = `https://firestore.googleapis.com/v1/projects/${firebaseConfig.projectId}/databases/(default)/documents`;
-function valorRestFs(v) {
-    if (!v) return null;
-    if ('stringValue' in v) return v.stringValue;
-    if ('integerValue' in v) return Number(v.integerValue);
-    if ('doubleValue' in v) return Number(v.doubleValue);
-    if ('booleanValue' in v) return v.booleanValue;
-    if ('nullValue' in v) return null;
-    if ('timestampValue' in v) return v.timestampValue;
-    if ('mapValue' in v) return camposRestFs(v.mapValue.fields || {});
-    if ('arrayValue' in v) return (v.arrayValue.values || []).map(valorRestFs);
-    return null;
-}
-function camposRestFs(f) { const o = {}; Object.entries(f || {}).forEach(([k, v]) => { o[k] = valorRestFs(v); }); return o; }
-function snapRestFs(docs) {
-    const lista = docs.map(d => { const dados = camposRestFs(d.fields); const id = String(d.name || '').split('/').pop(); return { id, exists: () => true, data: () => dados }; });
-    return { docs: lista, empty: !lista.length, size: lista.length, forEach: fn => lista.forEach(fn) };
-}
-async function colecaoRestFs(nome) {
-    const docs = []; let token = '';
-    const pre = preCarregado(nome);
-    for (let n = 0; n < 20; n++) {
-        let j;
-        if (n === 0 && pre) j = await pre;
-        else {
-            const r = await fetch(`${URL_REST_FS}/${nome}?pageSize=300&key=${firebaseConfig.apiKey}${token ? `&pageToken=${encodeURIComponent(token)}` : ''}`);
-            if (!r.ok) throw new Error('rest ' + r.status);
-            j = await r.json();
-        }
-        docs.push(...(j.documents || []));
-        if (!j.nextPageToken) break;
-        token = j.nextPageToken;
-    }
-    return snapRestFs(docs);
-}
-async function docRestFs(colecao, id) {
-    const pre = preCarregado(`${colecao}/${id}`);
-    if (pre) {
-        try {
-            const j = await pre;
-            if (!j || !j.fields) return { id, exists: () => false, data: () => undefined };
-            const dados = camposRestFs(j.fields); return { id, exists: () => true, data: () => dados };
-        } catch (e) { /* segue para o pedido normal abaixo */ }
-    }
-    const r = await fetch(`${URL_REST_FS}/${colecao}/${encodeURIComponent(id)}?key=${firebaseConfig.apiKey}`);
-    if (r.status === 404) return { id, exists: () => false, data: () => undefined };
-    if (!r.ok) throw new Error('rest ' + r.status);
-    const j = await r.json(); const dados = camposRestFs(j.fields);
-    return { id, exists: () => true, data: () => dados };
-}
-// ---------- Cardápio guardado no aparelho (2026-11-19) ----------
-const CHAVE_CACHE_MENU = 'favu_menu_cache_v1';
-function serializarMenu([cat, prod]) {
-    const lista = snap => (snap.docs || []).map(d => ({ id: d.id, d: d.data() }));
-    return { cat: lista(cat), prod: lista(prod) };
-}
-function desserializarMenu(o) {
-    const snap = arr => { const docs = (arr || []).map(x => ({ id: x.id, exists: () => true, data: () => JSON.parse(JSON.stringify(x.d)) })); return { docs, empty: !docs.length, size: docs.length, forEach: fn => docs.forEach(fn) }; };
-    return [snap(o.cat), snap(o.prod)];
-}
-function lerCacheMenu() { try { const o = JSON.parse(localStorage.getItem(CHAVE_CACHE_MENU) || 'null'); return o && Array.isArray(o.cat) && o.cat.length ? o : null; } catch (e) { return null; } }
-function salvarCacheMenu(o) { try { localStorage.setItem(CHAVE_CACHE_MENU, JSON.stringify(o)); } catch (e) {} }
-// Pedidos já disparados pelo cardápio.html antes deste arquivo baixar (window.__preFS).
-function preCarregado(nome) {
-    const p = window.__preFS && window.__preFS[nome];
-    if (p) delete window.__preFS[nome];
-    return p || null;
-}
-
-// ---------- Gravação do pedido com segunda via (2026-11-19) ----------
-// O pedido também é gravado pelo endereço web do banco (funciona mesmo se o
-// Firebase travar no navegador do Instagram).
-function valorParaRestFs(v) {
-    if (v === null || v === undefined) return { nullValue: null };
-    if (typeof v === 'boolean') return { booleanValue: v };
-    if (typeof v === 'number') return Number.isInteger(v) ? { integerValue: String(v) } : { doubleValue: v };
-    if (Array.isArray(v)) return { arrayValue: { values: v.map(valorParaRestFs) } };
-    if (typeof v === 'object') { const fields = {}; Object.entries(v).forEach(([k, x]) => { if (x !== undefined) fields[k] = valorParaRestFs(x); }); return { mapValue: { fields } }; }
-    return { stringValue: String(v) };
-}
-async function gravarPedidoRestFs(id, dados) {
-    const r = await fetch(`${URL_REST_FS}/pedidos?documentId=${encodeURIComponent(id)}&key=${firebaseConfig.apiKey}`, {
-        method: 'POST', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ fields: valorParaRestFs(dados).mapValue.fields })
-    });
-    if (r.status === 409) return; // já gravado pelo Firebase com o mesmo número
-    if (!r.ok) throw new Error('rest ' + r.status);
-}
-// Grava pelos dois caminhos ao mesmo tempo; vale o primeiro que confirmar.
-// Mesmo número de pedido nos dois, então não duplica.
-async function gravarPedidoSeguro(id, dados) {
-    const viaFirebase = setDoc(doc(db, "pedidos", id), dados);
-    const viaWeb = gravarPedidoRestFs(id, dados);
-    viaFirebase.catch(() => {}); viaWeb.catch(() => {});
-    const limite = new Promise((_, falha) => setTimeout(() => falha(new Error('tempo')), 20000));
-    await Promise.race([primeiroQueChegar([viaFirebase, viaWeb]), limite]);
-}
-
-// O primeiro que responder com sucesso vence.
-function primeiroQueChegar(promessas) {
-    return new Promise((ok, falha) => {
-        let erros = 0;
-        promessas.forEach(p => Promise.resolve(p).then(ok, e => { if (++erros === promessas.length) falha(e); }));
-    });
-}
-function buscarColecaoRapido(nome, consultaSdk, filtro) {
-    const viaRest = colecaoRestFs(nome).then(snap => {
-        if (!filtro) return snap;
-        const lista = snap.docs.filter(d => filtro(d.data()));
-        return { docs: lista, empty: !lista.length, size: lista.length, forEach: fn => lista.forEach(fn) };
-    });
-    return primeiroQueChegar([getDocs(consultaSdk), viaRest]);
-}
-function buscarDocRapido(colecao, id) {
-    return primeiroQueChegar([getDoc(doc(db, colecao, id)), docRestFs(colecao, id)]);
-}
-
-// Aviso de carregamento no lugar da tela em branco (2026-11-19).
-function mostrarCarregandoCardapio(lento) {
-    const m = document.getElementById('menu-principal');
-    if (!m || m.querySelector('.categoria-group')) return;
-    m.innerHTML = `<div class="cardapio-carregando"><div class="cardapio-spinner"></div><p>Carregando cardápio…</p>${lento ? '<small>Está demorando mais que o normal. Confira sua internet.</small><button type="button" onclick="location.reload()">Tentar de novo</button>' : ''}</div>`;
-}
-function mostrarErroCardapio() {
-    const m = document.getElementById('menu-principal');
-    if (!m || m.querySelector('.categoria-group')) return;
-    m.innerHTML = '<div class="cardapio-carregando"><p>Não conseguimos carregar o cardápio agora.</p><small>Confira sua internet e tente de novo.</small><button type="button" onclick="location.reload()">Tentar de novo</button></div>';
+    if (t.bg) root.style.setProperty('--bg-color', t.bg);
+    if (t.card) root.style.setProperty('--card-bg', t.card);
+    if (t.txt) root.style.setProperty('--text-dark', t.txt);
+    if (t.acc) { root.style.setProperty('--accent-orange', t.acc); root.style.setProperty('--accent-rust', t.acc); }
+    if (t.logoPrincipal) document.querySelectorAll('.hero-logo-big, .menu-logo-img').forEach(img => { img.src = t.logoPrincipal; });
+    if (t.logoRodape) document.querySelectorAll('.footer-logo').forEach(img => { img.src = t.logoRodape; });
+    if (t.imgTopo) { const h = document.querySelector('header'); if (h) h.style.backgroundImage = `url('${t.imgTopo}')`; }
+    if (t.imgRodape) { const f = document.querySelector('footer'); if (f) f.style.backgroundImage = `url('${t.imgRodape}')`; }
 }
 
 document.addEventListener("DOMContentLoaded", async function () {
     
-    // Tema Cores + Imagens — 2026-11-19: roda em paralelo, SEM segurar o cardápio.
-    // Antes o cardápio só começava depois do tema e das imagens (até ~10 s em 4G).
-    const idMenuUrl = (new URLSearchParams(location.search).get('menu') || 'padrao').trim().toLowerCase() || 'padrao';
-    document.body.classList.add('pg-cardapio', `cardapio-${idMenuUrl}`);
-    carregarCardapioAtual().then(() => {
-        if (window.__cardapioAtual.id !== idMenuUrl) {
-            document.body.classList.remove(`cardapio-${idMenuUrl}`);
-            document.body.classList.add(`cardapio-${window.__cardapioAtual.id}`);
-        }
-    }).catch(() => {});
-    (async () => {
-        try {
-            const usar = async t => {
-                window.__temaAtual = t;
-                carregarCardapioAtual().then(() => aplicarSiteCardapio()).catch(() => {});
-                // As imagens do tema (documentos grandes) só começam depois que o cardápio aparece.
-                await aplicarTemaComImagens(t, async () => { await carregarCardapioAtual(); await window.__menuPronto; });
-            };
-            const t = await obterTemaComCache(usar);
-            if (t) await usar(t);
-            else carregarCardapioAtual().then(() => aplicarSiteCardapio()).catch(() => {});
-        } catch (e) {}
-    })();
+    // Tema Cores
+    try {
+        const temaDoc = await getDoc(doc(db, "config", "tema"));
+        if (temaDoc.exists()) aplicarTemaSite(temaDoc.data());
+    } catch(e) {}
 
     // Agenda de Horários Globais e Exceções
     window.configGeralAgenda = {}; 
@@ -798,20 +235,19 @@ document.addEventListener("DOMContentLoaded", async function () {
     async function carregarAgenda() {
         try {
             // 1. Puxa a Regra Geral (Dias da semana padrão: Dom a Sáb)
-            const docGeral = await buscarDocRapido("config", "agenda_geral");
+            const docGeral = await getDoc(doc(db, "config", "agenda_geral"));
             if (docGeral.exists()) {
                 window.configGeralAgenda = docGeral.data();
             }
 
             // 2. Puxa as Exceções (Dias específicos fechados ou com horário diferente)
-            const docExcecoes = await buscarDocRapido("config", "agenda_excecoes");
+            const docExcecoes = await getDoc(doc(db, "config", "agenda_excecoes"));
             if (docExcecoes.exists()) {
                 window.regrasAgenda = docExcecoes.data(); 
             }
         } catch(e) { console.error("Erro ao carregar agenda", e); }
     }
-    window.__agendaPronta = carregarAgenda(); // em paralelo, não segura o cardápio
-    let avisarMenuPronto; window.__menuPronto = new Promise(r => { avisarMenuPronto = r; setTimeout(r, 15000); });
+    await carregarAgenda();
 
     
     // === CLIENTE 2026-06-21: ampliar imagens de produtos e comunicados ===
@@ -862,9 +298,6 @@ document.addEventListener("DOMContentLoaded", async function () {
         return imgs;
     }
 
-    // NOVO (2026-10): carrossel do comunicado. Uma imagem por vez, centralizada,
-    // passando sozinha em loop (como o da página inicial). Desliza com o dedo e
-    // tem bolinhas embaixo da imagem. Sem setas por cima da imagem.
     function iniciarCarrosselAviso(root) {
         const carrossel = root.querySelector('.aviso-carousel');
         if (!carrossel) return;
@@ -872,62 +305,28 @@ document.addEventListener("DOMContentLoaded", async function () {
         const total = Number(carrossel.dataset.total) || 1;
         if (!track || total < 2) return;
         const dots = Array.from(carrossel.querySelectorAll('.aviso-carousel-dots span'));
-        // Clone da primeira no fim para o loop não "voltar correndo".
-        const clone = track.firstElementChild.cloneNode(true);
-        clone.setAttribute('aria-hidden', 'true');
-        track.appendChild(clone);
+        let atual = 0, pausadoAte = 0;
 
-        let atual = 0, pausadoAte = 0, arrastando = false, inicioX = 0, deltaX = 0;
-        const aplicar = (animar) => {
-            track.style.transition = animar ? 'transform .55s ease' : 'none';
-            track.style.transform = `translateX(${-atual * 100}%)`;
-            dots.forEach((d, idx) => d.classList.toggle('ativo', idx === (atual % total)));
-        };
         const irPara = (i) => {
-            if (i < 0) { atual = total; aplicar(false); void track.offsetWidth; i = total - 1; }
-            atual = i;
-            aplicar(true);
+            atual = (i + total) % total;
+            track.scrollTo({ left: atual * track.clientWidth, behavior: 'smooth' });
         };
-        track.addEventListener('transitionend', () => {
-            if (atual >= total) { atual = 0; aplicar(false); }
-        });
         const pausar = () => { pausadoAte = Date.now() + 6000; };
 
-        const xDe = (e) => (e.touches ? e.touches[0].clientX : e.clientX);
-        const comecar = (e) => { arrastando = true; inicioX = xDe(e); deltaX = 0; pausar(); track.style.transition = 'none'; };
-        const mover = (e) => {
-            if (!arrastando) return;
-            deltaX = xDe(e) - inicioX;
-            const largura = carrossel.clientWidth || 1;
-            track.style.transform = `translateX(calc(${-atual * 100}% + ${deltaX}px))`;
-            if (Math.abs(deltaX) > 8 && e.cancelable) e.preventDefault();
-            if (Math.abs(deltaX) > largura) deltaX = Math.sign(deltaX) * largura;
-        };
-        const terminar = () => {
-            if (!arrastando) return;
-            arrastando = false;
-            const limite = Math.min(60, (carrossel.clientWidth || 300) * 0.15);
-            if (deltaX <= -limite) irPara(atual + 1);
-            else if (deltaX >= limite) irPara(atual - 1);
-            else aplicar(true);
-            if (Math.abs(deltaX) > 8) carrossel.dataset.arrastou = '1';
-            setTimeout(() => { delete carrossel.dataset.arrastou; }, 50);
-        };
-        track.addEventListener('touchstart', comecar, { passive: true });
-        track.addEventListener('touchmove', mover, { passive: false });
-        track.addEventListener('touchend', terminar);
-        track.addEventListener('mousedown', (e) => { e.preventDefault(); comecar(e); });
-        window.addEventListener('mousemove', mover);
-        window.addEventListener('mouseup', terminar);
-        // Não abre o zoom quando o toque foi para deslizar.
-        track.addEventListener('click', (e) => { if (carrossel.dataset.arrastou) { e.stopPropagation(); e.preventDefault(); } }, true);
+        track.addEventListener('scroll', () => {
+            const i = Math.round(track.scrollLeft / Math.max(1, track.clientWidth));
+            if (i !== atual) atual = i;
+            dots.forEach((d, idx) => d.classList.toggle('ativo', idx === atual));
+        }, { passive: true });
+        ['touchstart', 'pointerdown', 'wheel'].forEach(ev => track.addEventListener(ev, pausar, { passive: true }));
+        carrossel.querySelector('.prev')?.addEventListener('click', () => { pausar(); irPara(atual - 1); });
+        carrossel.querySelector('.next')?.addEventListener('click', () => { pausar(); irPara(atual + 1); });
         dots.forEach((d, idx) => d.addEventListener('click', () => { pausar(); irPara(idx); }));
 
-        aplicar(false);
         clearInterval(window.__avisoCarrosselTimer);
         window.__avisoCarrosselTimer = setInterval(() => {
             if (!document.body.contains(track)) return clearInterval(window.__avisoCarrosselTimer);
-            if (arrastando || Date.now() < pausadoAte) return;
+            if (Date.now() < pausadoAte) return;
             irPara(atual + 1);
         }, 3500);
     }
@@ -941,8 +340,9 @@ document.addEventListener("DOMContentLoaded", async function () {
         const variasImgs = avisoImgs.length > 1;
         const imagemHtml = avisoImgs.length
             ? `<div class="aviso-popup-image aviso-popup-image-${posicaoImagem} aviso-carousel" data-total="${avisoImgs.length}">
-                <div class="aviso-carousel-viewport"><div class="aviso-carousel-track">${avisoImgs.map((url, idx) => `<div class="aviso-carousel-slide"><img src="${url}" alt="Imagem do comunicado ${idx + 1}" class="imagem-ampliavel" draggable="false" onclick="window.abrirZoomImagem(this.src)"></div>`).join('')}</div></div>
-                ${variasImgs ? `<div class="aviso-carousel-dots">${avisoImgs.map((_, idx) => `<span class="${idx === 0 ? 'ativo' : ''}"></span>`).join('')}</div>` : ''}
+                <div class="aviso-carousel-track">${avisoImgs.map((url, idx) => `<div class="aviso-carousel-slide"><img src="${url}" alt="Imagem do comunicado ${idx + 1}" class="imagem-ampliavel" onclick="window.abrirZoomImagem(this.src)"></div>`).join('')}</div>
+                ${variasImgs ? `<button type="button" class="aviso-carousel-btn prev" aria-label="Anterior">‹</button><button type="button" class="aviso-carousel-btn next" aria-label="Próxima">›</button>
+                <div class="aviso-carousel-dots">${avisoImgs.map((_, idx) => `<span class="${idx === 0 ? 'ativo' : ''}"></span>`).join('')}</div>` : ''}
             </div>`
             : '';
 
@@ -957,8 +357,7 @@ document.addEventListener("DOMContentLoaded", async function () {
 
     async function carregarAvisos() {
         try {
-            await carregarCardapioAtual();
-            const avisosSnap = await buscarColecaoRapido('avisos', collection(db, "avisos"));
+            const avisosSnap = await getDocs(collection(db, "avisos"));
             const agora = Date.now();
             const avisosAtivos = [];
 
@@ -969,9 +368,7 @@ document.addEventListener("DOMContentLoaded", async function () {
                 const ativo = a?.ativo !== false;
                 const dentroDoPeriodo = (!inicio || agora >= inicio) && (!fim || agora <= fim);
 
-                // Comunicado só no cardápio dele (sem o campo = padrão).
-                const doCardapio = (a?.cardapio || 'padrao') === window.__cardapioAtual.id;
-                if (ativo && dentroDoPeriodo && doCardapio) {
+                if (ativo && dentroDoPeriodo) {
                     avisosAtivos.push(a);
                 }
             });
@@ -994,9 +391,9 @@ document.addEventListener("DOMContentLoaded", async function () {
                 tituloEl.textContent = titulo;
                 tituloEl.style.display = titulo ? 'block' : 'none';
                 textoEl.innerHTML = renderAvisoPopupContent(aviso);
+                iniciarCarrosselAviso(textoEl);
                 popup.style.display = 'flex';
                 setTimeout(() => popup.classList.add('show'), 50);
-                setTimeout(() => iniciarCarrosselAviso(textoEl), 120);
             }
         } catch (e) {
             console.error('Erro ao carregar avisos:', e);
@@ -1015,45 +412,9 @@ document.addEventListener("DOMContentLoaded", async function () {
         }
     }
 
-    // Busca categorias e produtos no banco (dois caminhos ao mesmo tempo).
-    async function buscarDadosMenu() {
-        const [, cat, prod] = await Promise.all([
-            carregarCardapioAtual(),
-            buscarColecaoRapido('categorias', collection(db, "categorias")),
-            buscarColecaoRapido('produtos', query(collection(db, "produtos"), where("ativo", "==", true)), d => d.ativo === true)
-        ]);
-        return [cat, prod];
-    }
-    // 2026-11-19: com o cardápio guardado no aparelho, ele aparece na hora e é
-    // conferido com o banco em segundo plano; se mudou, atualiza mantendo as quantidades.
-    async function iniciarCardapio() {
-        const guardado = lerCacheMenu();
-        if (!guardado) { await carregarMenu(); return; }
-        await carregarMenu(desserializarMenu(guardado));
+    async function carregarMenu() {
         try {
-            const novo = serializarMenu(await buscarDadosMenu());
-            if (JSON.stringify(novo) === JSON.stringify(guardado)) return;
-            salvarCacheMenu(novo);
-            const qtds = {};
-            document.querySelectorAll('.quantidade-input').forEach(i => { const v = parseInt(i.value) || 0; if (v > 0) qtds[i.getAttribute('data-item-id')] = v; });
-            await carregarMenu(desserializarMenu(novo));
-            Object.entries(qtds).forEach(([id, v]) => {
-                const i = document.querySelector(`.quantidade-input[data-item-id="${CSS.escape(id)}"]`);
-                if (i) { i.value = v; i.dispatchEvent(new Event('input', { bubbles: true })); }
-            });
-        } catch (e) { console.warn('Atualização do cardápio:', e); }
-    }
-
-    async function carregarMenu(snapsProntos) {
-        if (!snapsProntos) {
-            mostrarCarregandoCardapio();
-            clearTimeout(window.__timerLentidao);
-            window.__timerLentidao = setTimeout(() => mostrarCarregandoCardapio(true), 9000);
-        }
-        try {
-            let catSnapshot, prodSnapshotPronto;
-            if (snapsProntos) { await carregarCardapioAtual(); [catSnapshot, prodSnapshotPronto] = snapsProntos; }
-            else { [catSnapshot, prodSnapshotPronto] = await buscarDadosMenu(); salvarCacheMenu(serializarMenu([catSnapshot, prodSnapshotPronto])); }
+            const catSnapshot = await getDocs(collection(db, "categorias"));
             const categoriasAtivas = []; 
             
             catSnapshot.forEach(doc => {
@@ -1069,9 +430,6 @@ document.addEventListener("DOMContentLoaded", async function () {
                     if (fim && agora > fim) estaVisivel = false;
                 }
 
-                // 2026-10-15: só as categorias do cardápio aberto (ex.: cardapio.html?menu=natal).
-                if (estaVisivel && !categoriaNoCardapioAtual(c)) estaVisivel = false;
-
                 if (estaVisivel) { 
                     categoriasAtivas.push(c.nome);
                     configCategorias[c.nome] = { 
@@ -1081,13 +439,13 @@ document.addEventListener("DOMContentLoaded", async function () {
                         tipoColuna: c.tipoColuna || 'Tamanho', mensagemObs: c.mensagemObs || '',
                         // Datas permitidas para retirada (AAAA-MM-DD). Em branco = agenda normal.
                         entregaInicioData: c.entregaInicioData || '',
-                        entregaFimData: c.entregaFimData || '',
-                        entregaMensagem: c.entregaMensagem || ''
+                        entregaFimData: c.entregaFimData || ''
                     };
                 }
             });
 
-            const querySnapshot = prodSnapshotPronto;
+            const q = query(collection(db, "produtos"), where("ativo", "==", true));
+            const querySnapshot = await getDocs(q);
             const itensAgrupados = {};
 
             querySnapshot.forEach((doc) => {
@@ -1115,34 +473,8 @@ document.addEventListener("DOMContentLoaded", async function () {
                 itensAgrupados[nomeCategoria].push(item);
             });
 
-            clearTimeout(window.__timerLentidao);
             renderizarCardapio(itensAgrupados);
-            if (typeof avisarMenuPronto === 'function') avisarMenuPronto();
-            if (!Object.keys(itensAgrupados).length) {
-                const main = document.getElementById('menu-principal');
-                if (main) main.innerHTML = '<div class="cardapio-carregando"><p>No momento não há itens disponíveis neste cardápio.</p></div>';
-            }
-        } catch (error) {
-            console.error(error);
-            clearTimeout(window.__timerLentidao);
-            mostrarErroCardapio();
-        }
-    }
-
-    // ALTERADO (2026-10): o resumo do pedido é sempre "Nome | Tamanho", montado na hora
-    // (sem a descrição), e não depende mais do campo descricaoResumo gravado no produto.
-    function textoPuroCliente(valor) {
-        const d = document.createElement('div');
-        d.innerHTML = String(valor || '');
-        return (d.textContent || '').replace(/\s+/g, ' ').trim();
-    }
-    function resumoProdutoCliente(item) {
-        const nome = textoPuroCliente(item?.nome) || 'Item';
-        const tam = String(item?.tamanho || '').trim();
-        return tam ? `${nome} | ${tam}` : nome;
-    }
-    function escaparAtributoCliente(v) {
-        return String(v || '').replace(/&/g, '&amp;').replace(/"/g, '&quot;').replace(/</g, '&lt;');
+        } catch (error) { console.error(error); }
     }
 
     function normalizarChaveProduto(value) {
@@ -1243,8 +575,8 @@ document.addEventListener("DOMContentLoaded", async function () {
             const config = configCategorias[nomeCategoria];
             navHorizontal.innerHTML += `<a href="#${config.idGrupo}" class="categoria-btn ${primeiraCategoria ? 'active-link' : ''}" data-target="${config.idGrupo}">${nomeCategoria}</a>`;
 
-            // 2026-10-15: a mensagem de retirada não aparece mais na categoria; só no resumo e na data.
-            const avisoRetiradaHTML = '';
+            const periodoRetiradaCat = descreverPeriodoRetirada(config.entregaInicioData, config.entregaFimData);
+            const avisoRetiradaHTML = periodoRetiradaCat ? `<div class="info-box info-box-retirada"><div class="info-box-content"><i class="fa-regular fa-calendar"></i> <strong>Retirada ${periodoRetiradaCat}.</strong></div></div>` : '';
             const infoBoxHTML = avisoRetiradaHTML + ((config.mensagemObs && config.mensagemObs.trim() !== '') ? `<div class="info-box"><div class="info-box-content">${window.formatText(config.mensagemObs)}</div></div>` : '');
             
             let htmlGrupo = `
@@ -1329,16 +661,13 @@ document.addEventListener("DOMContentLoaded", async function () {
             const inputHtml = `
                 <div class="quantidade-input-group">
                     <button type="button" class="qtd-btn-table" onclick="window.alterarQuantidadeTabela('${itemKey}', -1, ${item.min || 1})">-</button>
-                    <input type="number" value="0" min="0" data-min="${item.min || 1}" data-preco="${item.preco}" data-resumo="${escaparAtributoCliente(resumoProdutoCliente(item))}" data-grupo="${nomeGrupo}" data-item-id="${itemId}" data-produto-key="${itemKey}" class="quantidade-input">
+                    <input type="number" value="0" min="0" data-min="${item.min || 1}" data-preco="${item.preco}" data-resumo="${item.descricaoResumo || item.nome}" data-grupo="${nomeGrupo}" data-item-id="${itemId}" data-produto-key="${itemKey}" class="quantidade-input">
                     <button type="button" class="qtd-btn-table" onclick="window.alterarQuantidadeTabela('${itemKey}', 1, ${item.min || 1})">+</button>
                 </div>`;
 
             const imagensProdutoItem = getProdutoImagensCliente(item);
             const temFoto = imagensProdutoItem.length > 0;
-            // 2026-10-15: a descrição do produto é a descrição da imagem. Não aparece
-            // embaixo do nome: abre na janela da foto, ou pelo ícone (i) quando não há foto.
-            const textoDescricaoItem = String(item.descricaoItem || item.descricaoPopup || '').trim();
-            const temDescPopup = textoDescricaoItem !== '';
+            const temDescPopup = item.descricaoPopup && item.descricaoPopup.trim() !== "";
             const isClickable = temFoto || temDescPopup;
 
             let iconeHint = '';
@@ -1353,6 +682,7 @@ document.addEventListener("DOMContentLoaded", async function () {
 
             const celulaNomeHTML = `
                 <div class="item-nome-texto" style="line-height: 1.2;">${window.formatText(itemNameClean)}</div>
+                ${item.descricaoItem ? `<div class="descricao" style="text-align: left;">${window.formatText(item.descricaoItem)}</div>` : ''}
             `;
             
             let tdSecundaria = '';
@@ -1426,14 +756,13 @@ document.addEventListener("DOMContentLoaded", async function () {
 
         const imagensProdutoPopup = getProdutoImagensCliente(itemInfo);
         const temFoto = imagensProdutoPopup.length > 0;
-        const textoDescricao = String(itemInfo.descricaoItem || itemInfo.descricaoPopup || '').trim();
-        const temDescPopup = textoDescricao !== '';
+        const temDescPopup = itemInfo.descricaoPopup && itemInfo.descricaoPopup.trim() !== "";
         
         if(!temFoto && !temDescPopup) return;
 
         const modal = document.getElementById('popup-item-imagem');
         document.getElementById('item-nome-display').textContent = itemInfo.nome;
-        document.getElementById('item-descricao-display').innerHTML = window.formatText(textoDescricao);
+        document.getElementById('item-descricao-display').innerHTML = window.formatText(itemInfo.descricaoPopup || itemInfo.descricaoItem || '');
         
         window.produtoPopupImagens = imagensProdutoPopup;
         window.produtoPopupImagemAtual = 0;
@@ -1462,14 +791,6 @@ document.addEventListener("DOMContentLoaded", async function () {
 
     function configurarEventosDrag() {
         const categoriesNav = document.getElementById('categorias-horizontal'); if(!categoriesNav) return;
-        // 2026-10-15: quando todas cabem, ficam centralizadas e sem corte; senão, rolam.
-        const ajustarAbasCabem = () => {
-            categoriesNav.classList.remove('abas-cabem');
-            categoriesNav.classList.toggle('abas-cabem', categoriesNav.scrollWidth <= categoriesNav.clientWidth + 1);
-        };
-        ajustarAbasCabem();
-        if (document.fonts && document.fonts.ready) document.fonts.ready.then(ajustarAbasCabem);
-        if (!window.__abasResizeOk) { window.__abasResizeOk = true; window.addEventListener('resize', ajustarAbasCabem); }
         let isDown = false; let startX, scrollLeft;
         
         categoriesNav.addEventListener('mousedown', (e) => { isDown = true; startX = e.pageX - categoriesNav.offsetLeft; scrollLeft = categoriesNav.scrollLeft; });
@@ -1514,49 +835,18 @@ document.addEventListener("DOMContentLoaded", async function () {
         const [a, m, d] = String(iso || '').split('-');
         return a && m && d ? `${d}/${m}` : '';
     }
-    function formatarDataLongaRetirada(iso) {
-        const [a, m, d] = String(iso || '').split('-');
-        return a && m && d ? `${d}/${m}/${a}` : '';
-    }
 
     function descreverPeriodoRetirada(ini, fim) {
-        const i = formatarDataLongaRetirada(ini), f = formatarDataLongaRetirada(fim);
-        if (i && f) return i === f ? `no dia ${i}` : `no período de ${i} - ${f}`;
+        const i = formatarDataCurtaRetirada(ini), f = formatarDataCurtaRetirada(fim);
+        if (i && f) return i === f ? `somente em ${i}` : `somente de ${i} a ${f}`;
         if (i) return `a partir de ${i}`;
         if (f) return `até ${f}`;
         return '';
     }
 
-    // Mensagem exibida ao cliente. Se a categoria tiver uma mensagem própria (campo
-    // "Mensagem exibida no site" no painel), usa ela. Senão, monta a mensagem padrão.
-    function mensagemRetiradaCategoria(nomeCat, cfg) {
-        if (!cfg || !(cfg.entregaInicioData || cfg.entregaFimData)) return '';
-        if (cfg.entregaMensagem && String(cfg.entregaMensagem).trim()) return String(cfg.entregaMensagem).trim();
-        return `Pedidos contendo os itens da categoria ${nomeCat} só são permitidos para retirada ${descreverPeriodoRetirada(cfg.entregaInicioData, cfg.entregaFimData)}.`;
-    }
-
-    function mensagemJanelaRetirada(janela) {
-        if (!janela || !janela.restrita) return '';
-        if (janela.categorias.length === 1) {
-            const c = janela.categorias[0];
-            return mensagemRetiradaCategoria(c.nome, c.cfg);
-        }
-        return `Pedidos contendo os itens das categorias ${janela.nomes} só são permitidos para retirada ${descreverPeriodoRetirada(janela.inicio, janela.fim)}.`;
-    }
-
     function getHojeISOLocal() {
         const d = new Date();
         return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
-    }
-
-    function normalizarNomeCategoria(v) {
-        return String(v || '').normalize('NFD').replace(/[\u0300-\u036f]/g, '').trim().toLowerCase();
-    }
-    function getConfigCategoria(nome) {
-        if (configCategorias[nome]) return configCategorias[nome];
-        const chave = normalizarNomeCategoria(nome);
-        const achada = Object.keys(configCategorias).find(k => normalizarNomeCategoria(k) === chave);
-        return achada ? configCategorias[achada] : null;
     }
 
     function calcularJanelaRetiradaCarrinho() {
@@ -1568,13 +858,10 @@ document.addEventListener("DOMContentLoaded", async function () {
             processados.add(chave);
             if ((parseInt(input.value) || 0) <= 0) return;
             const produto = bancoDeProdutos[input.getAttribute("data-item-id")] || {};
-            const nomes = [produto.categoria, input.getAttribute("data-grupo")].filter(Boolean);
-            for (const nomeCat of nomes) {
-                const cfg = getConfigCategoria(nomeCat);
-                if (cfg && (cfg.entregaInicioData || cfg.entregaFimData)) {
-                    categorias.set(nomeCat, { nome: nomeCat, ini: cfg.entregaInicioData || '', fim: cfg.entregaFimData || '', cfg });
-                    break;
-                }
+            const nomeCat = produto.categoria || input.getAttribute("data-grupo") || '';
+            const cfg = configCategorias[nomeCat];
+            if (cfg && (cfg.entregaInicioData || cfg.entregaFimData)) {
+                categorias.set(nomeCat, { nome: nomeCat, ini: cfg.entregaInicioData || '', fim: cfg.entregaFimData || '' });
             }
         });
 
@@ -1587,12 +874,11 @@ document.addEventListener("DOMContentLoaded", async function () {
         const nomes = lista.map(c => c.nome).join(', ');
         return { restrita: lista.length > 0, inicio, fim, categorias: lista, nomes, conflito: !!(inicio && fim && inicio > fim) };
     }
-    window.calcularJanelaRetiradaCarrinho = calcularJanelaRetiradaCarrinho;
 
     function validarDataNaJanelaRetirada(dataISO, janela) {
         if (!janela || !janela.restrita || !dataISO) return null;
         if ((janela.inicio && dataISO < janela.inicio) || (janela.fim && dataISO > janela.fim)) {
-            return `⛔ ${mensagemJanelaRetirada(janela)}`;
+            return `⛔ Itens de ${janela.nomes}: retirada ${descreverPeriodoRetirada(janela.inicio, janela.fim)}.`;
         }
         return null;
     }
@@ -1610,23 +896,6 @@ document.addEventListener("DOMContentLoaded", async function () {
         }
         return true;
     }
-
-    // Aviso dentro do resumo do pedido, assim que entra um item com período de retirada.
-    function atualizarAvisoJanelaResumo() {
-        const lista = document.getElementById("popup-resumo-itens");
-        if (!lista) return;
-        let aviso = document.getElementById("aviso-janela-resumo");
-        if (!aviso) {
-            aviso = document.createElement("div");
-            aviso.id = "aviso-janela-resumo";
-            aviso.className = "aviso-janela-retirada";
-            lista.insertAdjacentElement('beforebegin', aviso);
-        }
-        // 2026-10-15: a mensagem aparece só abaixo do campo de data, não no resumo.
-        aviso.innerHTML = '';
-        aviso.style.display = 'none';
-    }
-    window.atualizarAvisoJanelaResumo = atualizarAvisoJanelaResumo;
 
     window.abrirPopup = function() { 
         const janelaRetirada = calcularJanelaRetiradaCarrinho();
@@ -1654,12 +923,11 @@ document.addEventListener("DOMContentLoaded", async function () {
             if (!avisoJanela) {
                 avisoJanela = document.createElement("div");
                 avisoJanela.id = "aviso-janela-retirada";
-                avisoJanela.className = "aviso-janela-retirada";
+                avisoJanela.style.cssText = "margin-top:6px; padding:8px; border-radius:6px; font-size:0.85rem; font-weight:bold; color:#1D2814; background:rgba(224,159,65,0.12); border:1px solid rgba(224,159,65,0.35);";
                 inputData.insertAdjacentElement('afterend', avisoJanela);
             }
             if (janelaRetirada.restrita) {
-                // 2026-10-15: só o texto, logo abaixo do campo de data (sem ícone).
-                avisoJanela.innerHTML = window.formatText(mensagemJanelaRetirada(janelaRetirada));
+                avisoJanela.innerHTML = `<i class="fa-regular fa-calendar"></i> Itens de ${janelaRetirada.nomes}: retirada ${descreverPeriodoRetirada(janelaRetirada.inicio, janelaRetirada.fim)}.`;
                 avisoJanela.style.display = 'block';
             } else {
                 avisoJanela.style.display = 'none';
@@ -1716,7 +984,7 @@ document.addEventListener("DOMContentLoaded", async function () {
                 const partesData = dataEscolhida.split('-');
                 const diaDaSemana = new Date(partesData[0], partesData[1] - 1, partesData[2]).getDay();
 
-                const regraExcecao = window.regraExcecaoAplicavel(dataEscolhida);
+                const regraExcecao = window.regrasAgenda ? window.regrasAgenda[dataEscolhida] : null;
                 const regraGeralDoDia = window.configGeralAgenda ? window.configGeralAgenda[diaDaSemana] : null;
 
                 const resetarDataInvalida = (mensagem) => {
@@ -1744,19 +1012,7 @@ document.addEventListener("DOMContentLoaded", async function () {
 
                 // 0. DATA FORA DO PERÍODO DE RETIRADA DOS ITENS (ex.: cardápio de Natal)
                 const msgJanelaRetirada = validarDataNaJanelaRetirada(dataEscolhida, calcularJanelaRetiradaCarrinho());
-                if (msgJanelaRetirada) {
-                    // 2026-10-15: a mensagem do período já está logo abaixo da data. Não repete:
-                    // só limpa a data e destaca a mensagem por um instante.
-                    resetarDataInvalida('');
-                    if (avisoFechado) avisoFechado.style.display = 'none';
-                    const avisoPeriodo = document.getElementById('aviso-janela-retirada');
-                    if (avisoPeriodo) {
-                        avisoPeriodo.classList.remove('alerta');
-                        void avisoPeriodo.offsetWidth;
-                        avisoPeriodo.classList.add('alerta');
-                    }
-                    return;
-                }
+                if (msgJanelaRetirada) return resetarDataInvalida(msgJanelaRetirada);
 
                 // 1. DATA FECHADA MANUALMENTE (Puxa a mensagem customizada que você digitou)
                 if (regraExcecao && regraExcecao.indisponivel) {
@@ -2140,8 +1396,6 @@ document.addEventListener("DOMContentLoaded", async function () {
             }
         });
 
-        try { atualizarAvisoJanelaResumo(); } catch (e) {}
-
         if (totalBruto === 0) {
             resumoTotalPopup.style.display = 'none'; btnContainer.innerHTML = ''; fixedSummary.style.display = 'none'; window.fecharResumoPopup();
         } else {
@@ -2151,13 +1405,11 @@ document.addEventListener("DOMContentLoaded", async function () {
             
             resumoTotalPopup.innerHTML = `TOTAL: R$ ${totalLiquido.toLocaleString('pt-BR', { minimumFractionDigits: 2 })}`;
             
-            if(temErroMinimo) { btnContainer.innerHTML = '<p style="color:red; text-align:center; font-size:1.1rem; font-family: \'Basic Choice\', cursive;">Ajuste as quantidades mínimas.</p>'; } else { btnContainer.innerHTML = `<button type="button" onclick="window.abrirPopup()" class="btn-fazer-pedido">${escSite(window.__textosCardapio.botaoFazerPedido)}</button>`; }
+            if(temErroMinimo) { btnContainer.innerHTML = '<p style="color:red; text-align:center; font-size:1.1rem; font-family: \'Basic Choice\', cursive;">Ajuste as quantidades mínimas.</p>'; } else { btnContainer.innerHTML = '<button type="button" onclick="window.abrirPopup()" class="btn-fazer-pedido">FAZER PEDIDO</button>'; }
         }
     }
 
     window.confirmarPedido = async function() {
-        // Prévia do tema (painel): nada é gravado nem enviado.
-        if (new URLSearchParams(location.search).has('tema_previa')) { alert('Esta é uma prévia do tema: pedidos estão desativados aqui.'); return; }
         const btn = document.querySelector('.btn-primary-large');
         const txtOriginal = btn.textContent;
         btn.textContent = "Processando...";
@@ -2172,9 +1424,7 @@ document.addEventListener("DOMContentLoaded", async function () {
         }
 
         const idPedido = gerarIdPedido(); 
-        const linhaCardapio = window.__cardapioAtual && window.__cardapioAtual.id !== 'padrao' ? `*Cardápio: ${window.__cardapioAtual.nome}*\n` : '';
-        let txt = `${String(window.__textosCardapio.saudacaoWhatsapp).replace(/\\n/g, '\n')}\n\n*ID: ${idPedido}*\n${linhaCardapio}\n- *Resumo:*\n\n`;
-        const moedaWA = (v) => (Number(v) || 0).toLocaleString('pt-BR', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+        let txt = `Olá, Favu!\nGostaria de encomendar os itens abaixo:\n\n*ID: ${idPedido}*\n\n- *Resumo:*\n\n`;
         let total = 0; 
         const gResumo = {}; 
         let temItens = false; 
@@ -2233,12 +1483,10 @@ document.addEventListener("DOMContentLoaded", async function () {
             return; 
         }
 
-        // ALTERADO (2026-10): igual ao orçamento do painel, cada item mostra o valor
-        // unitário e o total ("Item | P - 1 un. (R$ 100,00 cada) = R$ 100,00").
         for (const grp in gResumo) {
-            txt += `*${grp}:*\n`;
+            txt += `*${grp}*\n`;
             gResumo[grp].forEach(item => {
-                txt += `${item.desc} - ${item.q} un. (R$ ${moedaWA(item.p)} cada) = R$ ${moedaWA(item.q * item.p)}\n`;
+                txt += `• ${item.q}x ${item.desc}\n`;
             });
             txt += `\n`;
         }
@@ -2263,12 +1511,12 @@ document.addEventListener("DOMContentLoaded", async function () {
         const janelaFinal = calcularJanelaRetiradaCarrinho();
         const msgJanelaFinal = janelaFinal.conflito ? 'Os itens do pedido têm períodos de retirada diferentes. Faça pedidos separados.' : validarDataNaJanelaRetirada(dt, janelaFinal);
         if (msgJanelaFinal) {
-            alert(textoPuroCliente(String(msgJanelaFinal).replace('⛔ ', '').replace(/<br\s*\/?>|<\/(div|p)>/gi, '\n')));
+            alert(msgJanelaFinal.replace('⛔ ', ''));
             btn.textContent = txtOriginal; btn.disabled = false;
             return;
         }
 
-        if (window.regraExcecaoAplicavel(dt)?.indisponivel) {
+        if (window.regrasAgenda && window.regrasAgenda[dt] && window.regrasAgenda[dt].indisponivel) {
             alert("A data selecionada está indisponível para entregas. Por favor, escolha outro dia.");
             btn.textContent = txtOriginal; 
             btn.disabled = false; 
@@ -2296,11 +1544,10 @@ document.addEventListener("DOMContentLoaded", async function () {
         const valorTaxaPagamento = totalLiquido * ((taxaPagamento.percentual || 0) / 100);
         const valorRecebidoPagamento = Math.max(0, totalLiquido - valorTaxaPagamento);
 
-        txt += `Valor dos Itens: R$ ${moedaWA(total)}\n`;
-        if(cupomAplicado.codigo) { txt += `Cupom: ${cupomAplicado.codigo}\n`; txt += `Desconto: -R$ ${moedaWA(cupomAplicado.desconto)}\n`; }
-        txt += `*Total Final: R$ ${moedaWA(totalLiquido)}*\n\n`;
         txt += `- *Informações:*\nNome: ${nm}\nNúmero: ${validarEFormatarTelefone(tel)}\nData: ${dataFormatada}\nHorário: ${hr.substring(0,5)}\nPagamento: ${formatarPagamentoCliente(pag, modalidadeCredito)}\n`;
         if(obs) txt += `Observações: ${obs}\n`;
+        if(cupomAplicado.codigo) { txt += `Cupom: ${cupomAplicado.codigo}\n`; txt += `Desconto: -R$${cupomAplicado.desconto.toFixed(2).replace('.', ',')}\n`; }
+        txt += `*Total Final: R$ ${totalLiquido.toLocaleString('pt-BR',{minimumFractionDigits:2})}*\n`;
 
         const dadosPedido = {
             ID_do_Pedido: idPedido,
@@ -2321,17 +1568,14 @@ document.addEventListener("DOMContentLoaded", async function () {
             Cupom: cupomAplicado.codigo ? `Cupom: ${cupomAplicado.codigo}\nDesconto: -R$${cupomAplicado.desconto.toFixed(2).replace('.', ',')}` : "",
             Observacoes: obs || "",
             Resumo_dos_Itens: itensParaPlanilha.trim(),
-            Cardapio: window.__cardapioAtual?.nome || 'Cardápio padrão',
-            CardapioId: window.__cardapioAtual?.id || 'padrao',
             Itens: itensCongelados,
             Subtotal_Itens: total.toLocaleString('pt-BR',{minimumFractionDigits:2}),
             createdAt: Date.now()
         };
         
         try {
-            await gravarPedidoSeguro(idPedido, dadosPedido);
-            // O registro do cupom nunca segura o envio do pedido.
-            if (cupomAplicado.codigo) await Promise.race([registrarUsoCupomCliente(cupomAplicado.codigo).catch(() => {}), new Promise(r => setTimeout(r, 5000))]);
+            await setDoc(doc(db, "pedidos", idPedido), dadosPedido);
+            if (cupomAplicado.codigo) await registrarUsoCupomCliente(cupomAplicado.codigo);
         } catch (error) {
             console.error("Erro ao salvar pedido no Firestore:", error);
             alert("Erro de conexão ao salvar pedido.");
@@ -2353,5 +1597,5 @@ document.addEventListener("DOMContentLoaded", async function () {
     }
     
     // Inicia o cardápio!
-    iniciarCardapio();
+    carregarMenu();
 });
